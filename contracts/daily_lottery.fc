@@ -1,0 +1,390 @@
+#include "imports/stdlib.fc";
+#include "imports/op-codes.fc";
+#include "imports/messages.fc";
+#include "imports/jetton-utils.fc";
+ 
+int transfer_amount() asm "200000000 PUSHINT"; ;; 0.2 TON
+int forward_amount() asm "50000000 PUSHINT"; ;; 0.05 TON
+int gas_consumption() asm "15000000 PUSHINT"; ;; 0.015 TON
+
+const int next_lottery_time_lapse = 86400;
+
+(int, int, int, int, slice, cell, int, int, cell) load_data() inline {
+  slice ds = get_data().begin_parse();
+
+  int balance = ds~load_coins();
+  int play_amount = ds~load_coins();
+  int referred_percentage = ds~load_uint(7);
+  int burn_percentage = ds~load_uint(7);
+  slice owner_address = ds~load_msg_addr();
+  cell player_addresses = ds~load_ref();
+  int player_count = ds~load_uint(32);
+  int next_lottery = ds~load_uint(32);
+  cell winner = ds~load_ref();
+
+  return (balance,
+          play_amount,
+          referred_percentage,
+          burn_percentage,
+          owner_address,
+          player_addresses,
+          player_count,
+          next_lottery,
+          winner
+          );
+}
+
+() save_data (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell player_addresses, int player_count, int next_lottery, cell winner) impure inline {
+    set_data(
+        begin_cell()
+        .store_grams(balance)
+        .store_grams(play_amount)
+        .store_uint(referred_percentage, 7)
+        .store_uint(burn_percentage, 7)
+        .store_slice(owner_address)
+        .store_ref(player_addresses)
+        .store_uint(player_count, 32)
+        .store_uint(next_lottery, 32)
+        .store_ref(winner)
+        .end_cell()
+    );
+}
+
+int get_data_balance() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return balance;
+}
+
+int get_data_play_amount() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return play_amount;
+}
+
+int get_data_referred_percentage() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return referred_percentage;
+}
+
+int get_data_burn_percentage() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return burn_percentage;
+}
+
+slice get_data_owner_address() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return owner_address;
+}
+
+int get_data_count() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return count;
+}
+
+int get_data_next_lottery() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return next_lottery;
+}
+
+cell get_data_winner() method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  return winner;
+}
+
+cell pack_player_addresses(slice sender, cell tail, int count) inline {
+    int cell_index = count % 3;
+
+    if (cell_index != 0) {
+      slice parser = tail.begin_parse();
+      cell next = parser~load_ref();
+
+      if (cell_index == 1){
+        slice address1 = parser~load_msg_addr();  
+        return begin_cell()
+           .store_ref(next)
+           .store_slice(address1)
+           .store_slice(sender)
+           .end_cell();
+      }
+      
+      if (cell_index == 2){
+        slice address1 = parser~load_msg_addr();  
+        slice address2 = parser~load_msg_addr(); 
+        return begin_cell()
+           .store_ref(next)
+           .store_slice(address1)
+           .store_slice(address2)
+           .store_slice(sender)
+           .end_cell();
+      }
+
+    }
+
+    return begin_cell()
+           .store_ref(tail)
+           .store_slice(sender)
+           .end_cell();
+}
+
+slice get_nth_sender(cell players, int index, int count) inline {
+    slice parser = players.begin_parse();
+
+    cell next = parser~load_ref();
+
+    int mod = count % 3;
+
+    if (index == 1) {
+        slice address1 = parser~load_msg_addr();
+        return address1;
+    }
+
+    if (index == 2) {
+      if (mod == 1) {
+        return get_nth_sender(next, index - mod, count - mod);
+      }
+      slice address1 = parser~load_msg_addr();
+      slice address2 = parser~load_msg_addr();
+      return address2;
+    }
+
+    if (index == 3) {
+      if (mod != 0) {
+        return get_nth_sender(next, index - mod, count - mod);
+      }
+      slice address1 = parser~load_msg_addr();
+      slice address2 = parser~load_msg_addr();
+      slice address3 = parser~load_msg_addr();
+      return address3;
+    }
+
+    if (mod == 0){
+      return get_nth_sender(next, index - 3, count - 3);
+    }
+
+    return get_nth_sender(next, index - mod, count - mod);
+}
+
+int get_tickets(cell players, slice address, int count, int total) inline {
+    if (count == 0){
+      return total;
+    }
+    slice parser = players.begin_parse();
+
+    cell next = parser~load_ref();
+
+    int mod = count % 3;
+
+    slice address1 = parser~load_msg_addr();
+    if (equal_slice_bits(address1, address)) {    
+      total = total + 1;
+    }
+
+    if (mod == 1) {
+      return get_tickets(next, address, count - mod, total);
+    }
+
+    slice address2 = parser~load_msg_addr();
+    if (equal_slice_bits(address2, address)) {    
+      total = total + 1;
+    }      
+
+    if (mod != 0) {
+      return get_tickets(next, address, count - mod, total);
+    }
+
+    slice address3 = parser~load_msg_addr();
+    if (equal_slice_bits(address3, address)) {    
+      total = total + 1;
+    }
+
+    if (mod == 0){
+      return get_tickets(next, address, count - 3, total);
+    }
+
+    return get_tickets(next, address, count - mod, total);
+}
+
+slice get_data_players(int index) method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  slice nth_players = get_nth_sender(players, index, count);
+
+  return nth_players;
+}
+
+int get_data_tickets(slice address) method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  int tickets = get_tickets(players, address, count, 0);
+
+  return tickets;
+}
+
+(int, int, int, int, int, int, cell, int) get_data_wallet(slice address) method_id {
+  (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+  int tickets = get_tickets(players, address, count, 0);
+
+  return (balance, play_amount, referred_percentage, burn_percentage, count, next_lottery, winner, tickets);
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  if (in_msg_body.slice_empty?()) { ;; ignore empty messages
+    return ();
+  }
+
+  var (op) = in_msg_body~load_uint(32);  ;; opcode
+
+  slice cs = in_msg_full.begin_parse();
+  int flags = cs~load_uint(4);
+
+  ;; withdraw TON
+  if (op == 1){
+    slice sender_address = cs~load_msg_addr();
+
+    int query_id = in_msg_body~load_uint(64);
+
+    int amount = in_msg_body~load_coins();
+
+    (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+    throw_unless(error::unauthorized_transfer,
+        equal_slice_bits(sender_address, owner_address)
+    );
+
+    var msg = begin_cell()
+      .store_uint(0x10, 6)
+      .store_slice(sender_address)
+      .store_coins(amount)
+      .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+      .store_uint(op::excesses, 32)
+      .store_uint(query_id, 64);
+    send_raw_message(msg.end_cell(), 1);
+
+  }
+
+  ;; play with TON
+  if (op == 2) {
+    slice sender_address = cs~load_msg_addr();
+    slice dst_address = cs~load_msg_addr();
+    int incoming_ton = cs~load_coins();
+
+    (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+    int query_id = in_msg_body~load_query_id();
+    slice referred_address =  in_msg_body~load_msg_addr();
+
+    throw_if(error::not_enough_tons, incoming_ton < play_amount);
+
+    if (now() < next_lottery){
+      throw_if(error::not_enough_space, count >= 1500); 
+    }
+
+    if (now() > next_lottery){
+
+      if (count > 4){ ;; players min.
+
+        randomize_lt();
+        int random_index = (random() % count) + 1;
+
+        slice new_winner = get_nth_sender(players, random_index, count);
+
+        var msg2 = begin_cell()
+          .store_uint(0x10, 6)
+          .store_slice(new_winner)
+          .store_coins(balance)
+          .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+          .store_uint(op::excesses, 32)
+          .store_uint(query_id, 64);
+        send_raw_message(msg2.end_cell(), 1);
+
+        count = 0;
+
+        players = begin_cell().end_cell();
+
+        winner = begin_cell()
+          .store_slice(new_winner)
+          .store_coins(balance)
+          .store_uint(next_lottery, 32)
+          .end_cell();
+
+        balance = 0;
+
+      }
+
+      next_lottery = next_lottery + next_lottery_time_lapse;
+
+    }
+
+    int referred_amount = 0;
+
+    if (equal_slice_bits(referred_address, sender_address) == false) {
+      referred_amount = incoming_ton / referred_percentage;
+
+      var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(referred_address)
+        .store_coins(referred_amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(op::excesses, 32)
+        .store_uint(query_id, 64);
+      send_raw_message(msg.end_cell(), 1);
+    }
+
+
+    int fee = incoming_ton / burn_percentage;
+
+    balance = balance + (incoming_ton - fee - referred_amount);
+
+    players = pack_player_addresses(sender_address, players, count);
+    count = count + 1;
+
+    save_data(balance, play_amount, referred_percentage, burn_percentage, owner_address, players, count, next_lottery, winner);
+
+    return ();
+  }
+
+  ;; change play amount
+  if (op == 3){
+    slice sender_address = cs~load_msg_addr();
+
+    int query_id = in_msg_body~load_uint(64);
+
+    int new_play_amount = in_msg_body~load_coins();
+
+    (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+    throw_unless(error::unauthorized_transfer,
+        equal_slice_bits(sender_address, owner_address)
+    );
+
+    save_data(balance, new_play_amount, referred_percentage, burn_percentage, owner_address, players, count, next_lottery, winner);
+
+  }
+
+  ;; set referred_percentage
+  if (op == 4){
+    slice sender_address = cs~load_msg_addr();
+
+    int query_id = in_msg_body~load_uint(64);
+
+    int new_referred_percentage = in_msg_body~load_uint(7);
+
+    (int balance, int play_amount, int referred_percentage, int burn_percentage, slice owner_address, cell players, int count, int next_lottery, cell winner) = load_data();
+
+    throw_unless(error::unauthorized_transfer,
+        equal_slice_bits(sender_address, owner_address)
+    );
+
+    save_data(balance, play_amount, new_referred_percentage, burn_percentage, owner_address, players, count, next_lottery, winner);
+
+  }
+
+}
