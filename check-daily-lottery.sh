@@ -1,5 +1,4 @@
-npm install husky --save-dev
-
+npm install
 npx func-js contracts/daily_lottery.fc --boc build/daily_lottery.cell
 xxd -p build/daily_lottery.cell
 
