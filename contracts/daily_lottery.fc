@@ -319,7 +319,7 @@ int get_data_tickets(slice address) method_id {
 
       }
 
-      next_lottery = next_lottery + next_lottery_time_lapse;
+      next_lottery = next_lottery + next_lottery_time_lapse * ((now() - next_lottery) / next_lottery_time_lapse + 1);
 
     }
 
